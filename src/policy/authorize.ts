@@ -1,6 +1,7 @@
 import { prisma } from '../db/client.js';
 import { logger, createGuildLogger } from '../observability/logger.js';
 import { DiscordErrorClass, classifyDiscordError } from '../discord/rest-errors.js';
+import { hierarchyManager } from './hierarchy.js';
 
 export interface AuthorizationContext {
   guildId: string;
@@ -8,6 +9,8 @@ export interface AuthorizationContext {
   toolName: string;
   toolArgs: Record<string, any>;
   riskLevel: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  discordClient?: any;
+  readOnly?: boolean;
 }
 
 export interface AuthorizationResult {
@@ -87,15 +90,19 @@ export class PolicyEngine {
         };
       }
 
-      // Check role hierarchy for target (if applicable)
-      const hierarchyCheck = await this.checkHierarchy(
-        context.guildId,
-        context.userId,
-        context.toolArgs
-      );
+      // Check role hierarchy for target (if applicable). Read-only lookups never
+      // mutate anything, so a lower-ranked member can still look up a higher one.
+      if (!context.readOnly) {
+        const hierarchyCheck = await this.checkHierarchy(
+          context.guildId,
+          context.userId,
+          context.toolArgs,
+          context.discordClient
+        );
 
-      if (!hierarchyCheck.allowed) {
-        return { allowed: false, reason: hierarchyCheck.reason, requiresConfirmation: false };
+        if (!hierarchyCheck.allowed) {
+          return { allowed: false, reason: hierarchyCheck.reason, requiresConfirmation: false };
+        }
       }
 
       // Check protected entities
@@ -273,11 +280,10 @@ export class PolicyEngine {
   private async checkHierarchy(
     guildId: string,
     userId: string,
-    toolArgs: Record<string, any>
+    toolArgs: Record<string, any>,
+    discordClient: any
   ): Promise<{ allowed: boolean; reason?: string }> {
     // Check if target user/role is above the user or bot in hierarchy
-    // This requires Discord API access to get role positions
-    
     const targetUserId = toolArgs.userId;
     const targetRoleId = toolArgs.roleId;
 
@@ -285,13 +291,17 @@ export class PolicyEngine {
       return { allowed: true };
     }
 
-    // Placeholder - actual implementation would:
-    // 1. Get bot's highest role position
-    // 2. Get user's highest role position
-    // 3. Get target's highest role position
-    // 4. Ensure bot > target and user > target
+    if (!discordClient) {
+      // Fail closed: without a Discord client we cannot verify role positions,
+      // and skipping the check would let a lower-ranked member act on a higher one.
+      return { allowed: false, reason: 'Hierarchy check unavailable: no Discord client' };
+    }
 
-    return { allowed: true };
+    const targetType: 'USER' | 'ROLE' = targetUserId ? 'USER' : 'ROLE';
+    const targetId = targetUserId ?? targetRoleId;
+
+    const result = await hierarchyManager.checkHierarchy(guildId, userId, targetId, targetType, discordClient);
+    return { allowed: result.allowed, reason: result.reason };
   }
 
   private checkProtectedEntities(

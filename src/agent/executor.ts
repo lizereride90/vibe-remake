@@ -180,6 +180,8 @@ export class Executor {
       toolName: planStep.toolName,
       toolArgs: validation.data,
       riskLevel: planStep.riskLevel,
+      discordClient: context.discordClient,
+      readOnly: planStep.readOnly,
     });
 
     if (!authResult.allowed) {
@@ -255,6 +257,8 @@ export class Executor {
       toolName: planStep.toolName,
       toolArgs: validation.data,
       riskLevel: planStep.riskLevel,
+      discordClient: context.discordClient,
+      readOnly: planStep.readOnly,
     });
 
     if (!authResult.allowed) {
